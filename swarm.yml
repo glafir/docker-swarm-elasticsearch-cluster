@@ -1,0 +1,89 @@
+version: '3.7'
+services:
+  es-sr:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.0
+    hostname: "{{.Node.Hostname}}"
+    environment:
+      - node.name={{.Node.Hostname}}
+      - cluster.name=sr-relef-cluster
+      - discovery.seed_hosts=es-sr
+      - cluster.initial_master_nodes=sr07,sr08,sr09
+      - indices.requests.cache.size=60%
+      - indices.queries.cache.size=10%
+      - node.ml=false
+      - xpack.ml.enabled=false
+      - xpack.monitoring.enabled=false
+      - xpack.security.enabled=false
+      - xpack.watcher.enabled=false
+      - bootstrap.memory_lock=false
+      - ES_JAVA_OPTS=-Xms1024m -Xmx1024m
+      - ES_PLUGINS_INSTALL=analysis-icu
+    volumes:
+      - hunspell-volume:/usr/share/elasticsearch/config/hunspell/
+      - data01:/usr/share/elasticsearch/data
+#    ports:
+#      - 9200:9200
+#      - 9300:9300
+    networks:
+      - elastic
+    deploy:
+#      placement:
+#        constraints: [node.labels.app_role == es-sr]
+      mode: global
+      endpoint_mode: dnsrr
+      resources:
+        limits:
+          memory: 2G
+
+  hunspell:
+    image: gitlab.relef.ru:4567/glafir/hunspell-ru:latest
+    depends_on:
+      - es-sr
+    networks:
+      - elastic
+    volumes:
+      - hunspell-volume:/usr/share/elasticsearch/config/hunspell/
+    entrypoint: sh
+    deploy:
+      mode: global
+    tty: true
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - 9200:9200
+    deploy:
+      mode: global
+    command: |
+      /bin/sh -c "echo '
+      user nobody nogroup;
+      worker_processes auto;
+      events {
+        worker_connections 1024;
+      }
+      http {
+        client_max_body_size 4g;
+        resolver 127.0.0.11 ipv6=off;
+        server {
+          listen *:9200;
+          location / {
+            proxy_set_header Connection keep-alive;
+            set $$url http://es-sr:9200;
+            proxy_pass $$url;
+            proxy_set_header  Host $$http_host;
+            proxy_set_header  X-Real-IP $$remote_addr;
+            proxy_set_header  X-Forwarded-For $$proxy_add_x_forwarded_for;
+          }
+        }
+      }' | tee /etc/nginx/nginx.conf && nginx -t && nginx -g 'daemon off;'"
+    networks:
+      - elastic
+volumes:
+  data01:
+    driver: local
+  hunspell-volume:
+
+networks:
+  elastic:
+    driver: overlay
+    attachable: true
